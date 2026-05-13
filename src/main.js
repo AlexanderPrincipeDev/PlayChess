@@ -399,6 +399,7 @@ const state = {
   legalTargets: [],
   lastMove: null,
   engineThinking: false,
+  engineMovePending: false,
   analysisLines: [],
   analysisBestMove: null,
   analysisFen: null,
@@ -481,6 +482,7 @@ function bindUi() {
       engine.stop();
       if (state.mode === "play") {
         state.engineThinking = false;
+        state.engineMovePending = false;
         state.analysisStoppedByUser = true;
         state.analysisLines = [];
         state.analysisBestMove = null;
@@ -500,6 +502,7 @@ function bindUi() {
     engine.stop();
     game.reset();
     state.engineThinking = false;
+    state.engineMovePending = false;
     state.analysisStoppedByUser = state.mode === "play";
     state.lastMove = null;
     state.selected = null;
@@ -516,6 +519,7 @@ function bindUi() {
   elements.undo.addEventListener("click", () => {
     engine.stop();
     state.engineThinking = false;
+    state.engineMovePending = false;
     if (game.undoPair()) {
       state.lastMove = null;
       state.analysisLines = [];
@@ -552,6 +556,7 @@ function bindUi() {
   elements.stop.addEventListener("click", () => {
     engine.stop();
     state.engineThinking = false;
+    state.engineMovePending = false;
     state.analysisStoppedByUser = true;
     setEngineState("Motor detenido");
     renderAnalysisPanel();
@@ -677,6 +682,9 @@ function bindEngine() {
     configureEngine();
     setEngineState("Motor listo");
     if (state.mode === "analysis") restartLiveAnalysis();
+    if (shouldEngineMove()) {
+      window.setTimeout(requestEngineMove, 0);
+    }
   });
 
   engine.addEventListener("info", (event) => {
@@ -692,6 +700,7 @@ function bindEngine() {
     const { move, info, mode } = event.detail;
     if (mode === "analysis" && event.detail.fen !== game.fen()) return;
     state.engineThinking = false;
+    if (mode === "bestmove") state.engineMovePending = false;
     if (info && mode === "analysis") state.analysisLines = event.detail.lines || [info];
     state.analysisBestMove = move;
 
@@ -797,10 +806,18 @@ function handleMoveAttempt(from, to, promotion = "q") {
 }
 
 function requestEngineMove() {
-  if (!engine.ready || game.isGameOver()) return;
-  if (sideToMoveName() === state.playerColor) return;
+  if (!shouldEngineMove()) {
+    state.engineMovePending = false;
+    return;
+  }
+  if (!engine.ready) {
+    state.engineMovePending = true;
+    setEngineState("Motor cargando");
+    return;
+  }
 
   configureEngine();
+  state.engineMovePending = false;
   state.engineThinking = true;
   setEngineState("Motor pensando");
   engine.bestMove({
@@ -808,6 +825,10 @@ function requestEngineMove() {
     depth: Number(elements.engineDepth.value),
     movetime: Number(elements.engineMoveTime.value),
   });
+}
+
+function shouldEngineMove() {
+  return state.mode === "play" && !game.isGameOver() && sideToMoveName() !== state.playerColor;
 }
 
 function requestAnalysis() {
@@ -868,6 +889,7 @@ function navigateToPly(ply) {
   game.goToPly(ply);
   state.mode = "analysis";
   state.engineThinking = false;
+  state.engineMovePending = false;
   state.analysisLines = [];
   state.analysisBestMove = null;
   state.analysisFen = null;
