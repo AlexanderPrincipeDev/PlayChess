@@ -56,10 +56,16 @@ app.innerHTML = `
         </section>
 
         <section class="panel-group compact-card">
-          <h2>Modo</h2>
+          <h2>Modo actual</h2>
           <div class="mode-tabs" role="tablist" aria-label="Modo">
-            <button class="mode-tab active" data-mode="play" type="button">Jugar</button>
-            <button class="mode-tab" data-mode="analysis" type="button">Analizar</button>
+            <button class="mode-tab active" data-mode="play" type="button">
+              <strong>Jugar</strong>
+              <span>Partida vs motor</span>
+            </button>
+            <button class="mode-tab" data-mode="analysis" type="button">
+              <strong>Analizar</strong>
+              <span>Revisar PGN/FEN</span>
+            </button>
           </div>
         </section>
 
@@ -155,7 +161,7 @@ app.innerHTML = `
               <strong data-analysis-depth>En espera</strong>
             </div>
             <div>
-              <span>NPS</span>
+              <span class="metric-label">NPS <span class="info-tooltip" tabindex="0" aria-label="Nodos por segundo: velocidad a la que el motor analiza posiciones.">i</span></span>
               <strong data-analysis-nps>N/A</strong>
             </div>
             <div>
@@ -205,6 +211,10 @@ app.innerHTML = `
 
         <details class="panel-group io-card tool-drawer">
           <summary>PGN</summary>
+          <label class="file-picker">
+            Archivo PGN
+            <input id="pgnFileInput" type="file" accept=".pgn,.txt,application/x-chess-pgn,text/plain" />
+          </label>
           <textarea id="pgnInput" spellcheck="false" rows="5" placeholder="Pega una partida PGN"></textarea>
           <div class="pgn-controls">
             <button id="loadPgnBtn" type="button">Cargar PGN</button>
@@ -325,6 +335,20 @@ app.innerHTML = `
         </footer>
       </section>
     </div>
+
+    <div id="checkmateModal" class="modal-backdrop" hidden>
+      <section class="settings-modal checkmate-modal" role="dialog" aria-modal="true" aria-labelledby="checkmateTitle">
+        <header class="modal-header">
+          <div>
+            <h2 id="checkmateTitle">Jaque mate</h2>
+            <p id="checkmateMessage">La partida terminó.</p>
+          </div>
+        </header>
+        <footer class="modal-footer">
+          <button id="playAgainBtn" class="primary-button" type="button">Volver a jugar</button>
+        </footer>
+      </section>
+    </div>
   </div>
 `;
 
@@ -401,12 +425,16 @@ const elements = {
   saveAnnotation: document.querySelector("#saveAnnotationBtn"),
   fenInput: document.querySelector("#fenInput"),
   pgnInput: document.querySelector("#pgnInput"),
+  pgnFileInput: document.querySelector("#pgnFileInput"),
   loadFen: document.querySelector("#loadFenBtn"),
   loadPgn: document.querySelector("#loadPgnBtn"),
   pgnStart: document.querySelector("#pgnStartBtn"),
   pgnPrev: document.querySelector("#pgnPrevBtn"),
   pgnNext: document.querySelector("#pgnNextBtn"),
   pgnEnd: document.querySelector("#pgnEndBtn"),
+  checkmateModal: document.querySelector("#checkmateModal"),
+  checkmateMessage: document.querySelector("#checkmateMessage"),
+  playAgain: document.querySelector("#playAgainBtn"),
 };
 
 const state = {
@@ -419,6 +447,7 @@ const state = {
   lastMove: null,
   engineThinking: false,
   engineMovePending: false,
+  checkmateFenShown: null,
   analysisLines: [],
   analysisBestMove: null,
   analysisFen: null,
@@ -468,6 +497,7 @@ function boot() {
   elements.showCoordinates.value = String(settings.showCoordinates);
   elements.pgnInput.value = settings.pgn || "";
   document.body.dataset.boardTheme = settings.boardTheme;
+  if (!settings.fen && !settings.pgn) state.orientation = state.playerColor;
   renderEngineProfile();
 
   if (settings.fen) {
@@ -529,6 +559,7 @@ function bindUi() {
     state.analysisLines = [];
     state.analysisBestMove = null;
     state.analysisFen = null;
+    state.checkmateFenShown = null;
     resetClock();
     persist();
     render();
@@ -638,21 +669,20 @@ function bindUi() {
   });
 
   elements.loadPgn.addEventListener("click", () => {
+    loadPgnText(elements.pgnInput.value.trim());
+  });
+
+  elements.pgnFileInput.addEventListener("change", async () => {
+    const file = elements.pgnFileInput.files?.[0];
+    if (!file) return;
     try {
-      engine.stop();
-      game.loadPgn(elements.pgnInput.value.trim());
-      state.mode = "analysis";
-      state.lastMove = null;
-      state.selected = null;
-      state.legalTargets = [];
-      state.analysisLines = [];
-      state.analysisBestMove = null;
-      state.analysisFen = null;
-      persist();
-      render();
-      restartLiveAnalysis();
-    } catch (error) {
-      showStatus(error.message || "PGN inválido.");
+      const text = await file.text();
+      elements.pgnInput.value = text;
+      loadPgnText(text);
+    } catch {
+      showStatus("No se pudo leer el archivo PGN.");
+    } finally {
+      elements.pgnFileInput.value = "";
     }
   });
 
@@ -660,6 +690,10 @@ function bindUi() {
   elements.pgnPrev.addEventListener("click", () => navigatePgn("prev"));
   elements.pgnNext.addEventListener("click", () => navigatePgn("next"));
   elements.pgnEnd.addEventListener("click", () => navigatePgn("end"));
+  elements.playAgain.addEventListener("click", () => {
+    closeCheckmateModal();
+    elements.newGame.click();
+  });
   setupVoiceInput();
 
   window.addEventListener("keydown", (event) => {
@@ -852,6 +886,26 @@ function requestAnalysis() {
   restartLiveAnalysis();
 }
 
+function loadPgnText(pgn) {
+  try {
+    engine.stop();
+    game.loadPgn(pgn);
+    state.mode = "analysis";
+    state.lastMove = null;
+    state.selected = null;
+    state.legalTargets = [];
+    state.analysisLines = [];
+    state.analysisBestMove = null;
+    state.analysisFen = null;
+    state.checkmateFenShown = null;
+    persist();
+    render();
+    restartLiveAnalysis();
+  } catch (error) {
+    showStatus(error.message || "PGN inválido.");
+  }
+}
+
 function restartLiveAnalysis() {
   if (!engine.ready) {
     state.mode = "analysis";
@@ -928,6 +982,7 @@ function render() {
     onSelectPly: navigateToPly,
   });
   renderAnalysisPanel();
+  renderCheckmateModal();
   persist();
 }
 
@@ -951,6 +1006,20 @@ function renderAnalysisPanel() {
     thinking: state.engineThinking,
     fen: state.analysisFen || game.fen(),
   });
+}
+
+function renderCheckmateModal() {
+  if (!game.isCheckmate()) return;
+  const fen = game.fen();
+  if (state.checkmateFenShown === fen) return;
+  state.checkmateFenShown = fen;
+  elements.checkmateMessage.textContent = game.status();
+  elements.checkmateModal.hidden = false;
+  pauseClock();
+}
+
+function closeCheckmateModal() {
+  elements.checkmateModal.hidden = true;
 }
 
 function persist() {

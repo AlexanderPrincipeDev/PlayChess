@@ -338,14 +338,53 @@ details:not([open]) > :not(summary) {
 
 .mode-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
   gap: 6px;
+}
+
+.mode-tab {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.mode-tab strong,
+.mode-tab span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+}
+
+.mode-tab strong {
+  font-size: 0.92rem;
+}
+
+.mode-tab span {
+  color: #96918a;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.mode-tab.active span {
+  color: #26301c;
 }
 
 .pgn-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.file-picker {
+  gap: 6px;
+}
+
+.file-picker input {
+  padding: 7px;
 }
 
 .pgn-controls button {
@@ -693,6 +732,50 @@ body[data-board-theme="gray"] .square.dark {
   letter-spacing: 0.08em;
 }
 
+.metric-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.info-tooltip {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid #777066;
+  border-radius: 50%;
+  color: #bdb7ac;
+  font-size: 0.65rem;
+  font-style: normal;
+  line-height: 1;
+  text-transform: none;
+  cursor: help;
+}
+
+.info-tooltip:hover::after,
+.info-tooltip:focus-visible::after {
+  content: attr(aria-label);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: 220px;
+  transform: translateX(-50%);
+  border: 1px solid #4c4942;
+  border-radius: 5px;
+  background: #1f1e1a;
+  color: #ded9cf;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.35;
+  padding: 8px 9px;
+  text-transform: none;
+  box-shadow: 0 14px 32px rgb(0 0 0 / 45%);
+}
+
 .analysis-grid strong {
   overflow-wrap: anywhere;
 }
@@ -888,6 +971,15 @@ body[data-board-theme="gray"] .square.dark {
 
 .compact-settings-modal {
   width: min(94vw, 440px);
+}
+
+.checkmate-modal {
+  width: min(94vw, 420px);
+}
+
+.checkmate-modal #checkmateTitle {
+  color: #ffdf8a;
+  font-size: 1.25rem;
 }
 
 .modal-header {

@@ -221,6 +221,10 @@ export class GameState {
     return this.chess.isGameOver();
   }
 
+  isCheckmate() {
+    return this.chess.isCheckmate();
+  }
+
   rebuildFromLineMoves() {
     const next = new Chess();
     for (const move of this.lineMoves.slice(0, this.currentPly)) {
