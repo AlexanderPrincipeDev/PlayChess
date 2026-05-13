@@ -84,35 +84,6 @@ app.innerHTML = `
           </details>
         </section>
 
-        <section class="panel-group compact-card clock-card">
-          <h2>Reloj</h2>
-          <div class="match-clocks" aria-label="Relojes de partida">
-            <div id="blackClockCard" class="player-clock black-clock">
-              <div class="clock-player-row">
-                <span class="player-dot black"></span>
-                <strong id="blackClockName">Stockfish</strong>
-                <span id="blackClockMeta" class="clock-rating">SF</span>
-              </div>
-              <strong id="blackClock" class="clock-time">05:00</strong>
-              <div class="clock-progress" aria-hidden="true"><span id="blackClockProgress"></span></div>
-            </div>
-            <div id="whiteClockCard" class="player-clock white-clock">
-              <div class="clock-player-row">
-                <span class="player-dot white"></span>
-                <strong id="whiteClockName">Jugador</strong>
-                <span id="whiteClockMeta" class="clock-rating">Local</span>
-              </div>
-              <strong id="whiteClock" class="clock-time">05:00</strong>
-              <div class="clock-progress" aria-hidden="true"><span id="whiteClockProgress"></span></div>
-            </div>
-          </div>
-          <div class="toolbar">
-            <button id="startClockBtn" type="button">Iniciar reloj</button>
-            <button id="pauseClockBtn" type="button">Pausar</button>
-            <button id="resetClockBtn" type="button">Reset</button>
-          </div>
-        </section>
-
         <section class="panel-group compact-card voice-card">
           <h2>Voz</h2>
           <button id="voiceMoveBtn" class="voice-button" type="button">Escuchar jugada</button>
@@ -129,38 +100,40 @@ app.innerHTML = `
           <div id="repertoireList" class="library-list"></div>
         </details>
 
-        <section class="panel-group compact-card">
-          <h2>Configuración</h2>
-          <div class="control-grid">
-            <label>
-              Color
-              <select id="playerColor">
-                <option value="white">Blancas</option>
-                <option value="black">Negras</option>
-              </select>
-            </label>
-            <label>
-              Tema tablero
-              <select id="boardTheme">
-                <option value="classic">Clásico</option>
-                <option value="green">Verde</option>
-                <option value="blue">Azul</option>
-                <option value="gray">Gris</option>
-              </select>
-            </label>
-            <label>
-              Coordenadas
-              <select id="showCoordinates">
-                <option value="true">Mostrar</option>
-                <option value="false">Ocultar</option>
-              </select>
-            </label>
-          </div>
-        </section>
       </aside>
 
       <section class="board-section" aria-label="Tablero de ajedrez">
+        <div id="topClockSlot" class="board-clock-slot"></div>
         <div id="board" class="board" aria-label="Tablero"></div>
+        <div id="bottomClockSlot" class="board-clock-slot"></div>
+        <div class="board-controls" aria-label="Controles del tablero">
+          <div class="clock-actions">
+            <button id="startClockBtn" type="button">Iniciar reloj</button>
+            <button id="pauseClockBtn" type="button">Pausar</button>
+            <button id="resetClockBtn" type="button">Reset</button>
+          </div>
+          <button id="gameSettingsBtn" class="icon-button" type="button" aria-label="Configurar juego">⚙</button>
+        </div>
+        <div id="clockPool" hidden>
+          <div id="blackClockCard" class="player-clock black-clock">
+            <div class="clock-player-row">
+              <span class="player-dot black"></span>
+              <strong id="blackClockName">Stockfish</strong>
+              <span id="blackClockMeta" class="clock-rating">SF</span>
+            </div>
+            <strong id="blackClock" class="clock-time">05:00</strong>
+            <div class="clock-progress" aria-hidden="true"><span id="blackClockProgress"></span></div>
+          </div>
+          <div id="whiteClockCard" class="player-clock white-clock">
+            <div class="clock-player-row">
+              <span class="player-dot white"></span>
+              <strong id="whiteClockName">Jugador</strong>
+              <span id="whiteClockMeta" class="clock-rating">Local</span>
+            </div>
+            <strong id="whiteClock" class="clock-time">05:00</strong>
+            <div class="clock-progress" aria-hidden="true"><span id="whiteClockProgress"></span></div>
+          </div>
+        </div>
       </section>
 
       <aside class="side-panel" aria-label="Panel de juego y análisis">
@@ -312,6 +285,46 @@ app.innerHTML = `
         </footer>
       </section>
     </div>
+
+    <div id="gameSettingsModal" class="modal-backdrop" hidden>
+      <section class="settings-modal compact-settings-modal" role="dialog" aria-modal="true" aria-labelledby="gameSettingsTitle">
+        <header class="modal-header">
+          <div>
+            <h2 id="gameSettingsTitle">Configuración del juego</h2>
+            <p>Ajusta color, tablero y coordenadas.</p>
+          </div>
+          <button id="closeGameSettingsBtn" class="icon-button" type="button" aria-label="Cerrar configuración de juego">×</button>
+        </header>
+        <div class="modal-grid">
+          <label>
+            Color
+            <select id="playerColor">
+              <option value="white">Blancas</option>
+              <option value="black">Negras</option>
+            </select>
+          </label>
+          <label>
+            Tema tablero
+            <select id="boardTheme">
+              <option value="classic">Clásico</option>
+              <option value="green">Verde</option>
+              <option value="blue">Azul</option>
+              <option value="gray">Gris</option>
+            </select>
+          </label>
+          <label class="modal-wide">
+            Coordenadas
+            <select id="showCoordinates">
+              <option value="true">Mostrar</option>
+              <option value="false">Ocultar</option>
+            </select>
+          </label>
+        </div>
+        <footer class="modal-footer">
+          <button id="saveGameSettingsBtn" class="primary-button" type="button">Guardar</button>
+        </footer>
+      </section>
+    </div>
   </div>
 `;
 
@@ -321,6 +334,8 @@ const engine = new StockfishEngine();
 
 const elements = {
   board: document.querySelector("#board"),
+  topClockSlot: document.querySelector("#topClockSlot"),
+  bottomClockSlot: document.querySelector("#bottomClockSlot"),
   status: document.querySelector("#statusText"),
   engineState: document.querySelector("#engineState"),
   modeTabs: [...document.querySelectorAll("[data-mode]")],
@@ -356,6 +371,10 @@ const elements = {
   engineSettingsModal: document.querySelector("#engineSettingsModal"),
   closeEngineSettings: document.querySelector("#closeEngineSettingsBtn"),
   saveEngineSettings: document.querySelector("#saveEngineSettingsBtn"),
+  gameSettings: document.querySelector("#gameSettingsBtn"),
+  gameSettingsModal: document.querySelector("#gameSettingsModal"),
+  closeGameSettings: document.querySelector("#closeGameSettingsBtn"),
+  saveGameSettings: document.querySelector("#saveGameSettingsBtn"),
   voiceMove: document.querySelector("#voiceMoveBtn"),
   voiceStatus: document.querySelector("#voiceStatus"),
   playerColor: document.querySelector("#playerColor"),
@@ -553,6 +572,12 @@ function bindUi() {
   elements.engineSettingsModal.addEventListener("click", (event) => {
     if (event.target === elements.engineSettingsModal) closeEngineSettings();
   });
+  elements.gameSettings.addEventListener("click", openGameSettings);
+  elements.closeGameSettings.addEventListener("click", closeGameSettings);
+  elements.saveGameSettings.addEventListener("click", saveGameSettings);
+  elements.gameSettingsModal.addEventListener("click", (event) => {
+    if (event.target === elements.gameSettingsModal) closeGameSettings();
+  });
   elements.stop.addEventListener("click", () => {
     engine.stop();
     state.engineThinking = false;
@@ -560,24 +585,6 @@ function bindUi() {
     state.analysisStoppedByUser = true;
     setEngineState("Motor detenido");
     renderAnalysisPanel();
-  });
-
-  elements.playerColor.addEventListener("change", () => {
-    state.playerColor = elements.playerColor.value;
-    state.orientation = state.playerColor;
-    persist();
-    render();
-    if (state.mode === "play" && state.playerColor === sideToMoveName()) requestEngineMove();
-  });
-
-  elements.boardTheme.addEventListener("change", () => {
-    document.body.dataset.boardTheme = elements.boardTheme.value;
-    persist();
-  });
-
-  elements.showCoordinates.addEventListener("change", () => {
-    persist();
-    renderBoard();
   });
 
   elements.saveAnnotation.addEventListener("click", saveActiveAnnotation);
@@ -658,6 +665,10 @@ function bindUi() {
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !elements.engineSettingsModal.hidden) {
       closeEngineSettings();
+      return;
+    }
+    if (event.key === "Escape" && !elements.gameSettingsModal.hidden) {
+      closeGameSettings();
       return;
     }
 
@@ -994,6 +1005,29 @@ function closeEngineSettings() {
   elements.engineSettings.focus();
 }
 
+function openGameSettings() {
+  elements.playerColor.value = state.playerColor;
+  elements.boardTheme.value = document.body.dataset.boardTheme || settings.boardTheme;
+  elements.showCoordinates.value = String(elements.showCoordinates.value === "true");
+  elements.gameSettingsModal.hidden = false;
+  elements.playerColor.focus();
+}
+
+function closeGameSettings() {
+  elements.gameSettingsModal.hidden = true;
+  elements.gameSettings.focus();
+}
+
+function saveGameSettings() {
+  state.playerColor = elements.playerColor.value;
+  state.orientation = state.playerColor;
+  document.body.dataset.boardTheme = elements.boardTheme.value;
+  persist();
+  render();
+  closeGameSettings();
+  if (state.mode === "play" && state.playerColor === sideToMoveName()) requestEngineMove();
+}
+
 async function saveEngineSettings() {
   const previousProfile = state.engineProfile;
   state.engineProfile = elements.engineProfile.value;
@@ -1292,6 +1326,7 @@ function applyClockIncrement(color) {
 }
 
 function renderClock() {
+  renderClockPlacement();
   elements.whiteClock.textContent = formatClock(state.clock.whiteMs);
   elements.blackClock.textContent = formatClock(state.clock.blackMs);
   const playerIsWhite = state.playerColor === "white";
@@ -1307,6 +1342,13 @@ function renderClock() {
   elements.blackClockCard.classList.toggle("flagged", state.clock.blackMs <= 0);
   elements.whiteClockProgress.style.width = `${clockProgress(state.clock.whiteMs)}%`;
   elements.blackClockProgress.style.width = `${clockProgress(state.clock.blackMs)}%`;
+}
+
+function renderClockPlacement() {
+  const topClock = state.orientation === "white" ? elements.blackClockCard : elements.whiteClockCard;
+  const bottomClock = state.orientation === "white" ? elements.whiteClockCard : elements.blackClockCard;
+  if (elements.topClockSlot.firstElementChild !== topClock) elements.topClockSlot.replaceChildren(topClock);
+  if (elements.bottomClockSlot.firstElementChild !== bottomClock) elements.bottomClockSlot.replaceChildren(bottomClock);
 }
 
 function clockProgress(ms) {
