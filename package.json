@@ -1,0 +1,27 @@
+{
+  "name": "playchessstockfish",
+  "version": "1.0.0",
+  "description": "Vanilla JS chess web app for playing and analyzing with Stockfish.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "keywords": [
+    "chess",
+    "stockfish",
+    "wasm",
+    "vanilla-js"
+  ],
+  "author": "",
+  "license": "GPL-3.0",
+  "dependencies": {
+    "chess.js": "^1.4.0",
+    "stockfish": "^18.0.7"
+  },
+  "devDependencies": {
+    "vite": "^8.0.12"
+  }
+}
