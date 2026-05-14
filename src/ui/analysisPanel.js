@@ -1,7 +1,7 @@
 import { Chess } from "chess.js";
 import { formatScore } from "../engine/uciParser.js";
 
-export function renderAnalysis(container, { lines, bestMove, turn, thinking, fen }) {
+export function renderAnalysis(container, { lines, bestMove, turn, thinking, fen, selectedLine = 0, onSelectLine }) {
   const orderedLines = lines?.length ? lines : [];
   const mainLine = orderedLines[0];
   const score = mainLine?.score ? formatScore(mainLine.score, turn) : "0.00";
@@ -25,10 +25,13 @@ export function renderAnalysis(container, { lines, bestMove, turn, thinking, fen
     return;
   }
 
-  for (const line of orderedLines.slice(0, 5)) {
+  for (const [index, line] of orderedLines.slice(0, 5).entries()) {
     const item = document.createElement("li");
-    item.className = "analysis-line";
 
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "analysis-line";
+    button.classList.toggle("active", index === selectedLine);
     const evalNode = document.createElement("span");
     evalNode.className = "line-score";
     evalNode.textContent = formatScore(line.score, turn);
@@ -41,9 +44,15 @@ export function renderAnalysis(container, { lines, bestMove, turn, thinking, fen
     pvNode.className = "line-pv";
     pvNode.textContent = formatPv(fen, line.pv);
 
-    item.append(evalNode, depthNode, pvNode);
+    button.append(evalNode, depthNode, pvNode);
+    button.addEventListener("click", () => onSelectLine?.(line, index));
+    item.append(button);
     list.append(item);
   }
+}
+
+export function formatPvLine(fen, pv = []) {
+  return formatPv(fen, pv);
 }
 
 function formatBestMove(fen, move) {

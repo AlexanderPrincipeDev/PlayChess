@@ -2,10 +2,17 @@ import "./styles.css";
 import { Chess } from "chess.js";
 import { classifyLoss, classificationNag, scoreToCp } from "./analysis/moveClassifier.js";
 import { GameState } from "./chess/gameState.js";
+import { capturedMaterial, materialRow } from "./chess/material.js";
+import { splitPgnGames } from "./chess/pgnTools.js";
 import { parseSpanishMove } from "./chess/spanishMoveParser.js";
+import { createVariation, pvToSan, uciToMove } from "./chess/variationTools.js";
 import { ENGINE_PROFILES, resolveEngineProfile, StockfishEngine } from "./engine/stockfishEngine.js";
-import { detectOpening } from "./openings/openingBook.js";
+import { buildGameRecord, currentGameResult } from "./library/gameMetadata.js";
+import { detectOpening, recommendOpeningMoves } from "./openings/openingBook.js";
 import {
+  deleteGameRecord,
+  exportUserData,
+  importUserData,
   loadRepertoireLines,
   loadSavedGames,
   loadSettings,
@@ -15,6 +22,8 @@ import {
 } from "./storage/appStorage.js";
 import { ChessBoard } from "./ui/board.js";
 import { renderAnalysis } from "./ui/analysisPanel.js";
+import { renderAnalysisReport, renderEvaluationGraph } from "./ui/evaluationGraph.js";
+import { renderRepertoireLibrary, renderSavedGamesLibrary } from "./ui/libraryPanel.js";
 import { renderMoveList } from "./ui/moveList.js";
 
 const app = document.querySelector("#app");
@@ -27,8 +36,8 @@ app.innerHTML = `
         <h1>Play Chess Stockfish</h1>
       </div>
       <nav class="site-nav" aria-label="Secciones">
-        <span>Jugar</span>
-        <span>Analizar</span>
+        <button class="nav-mode active" data-mode="play" type="button">Jugar</button>
+        <button class="nav-mode" data-mode="analysis" type="button">Analizar</button>
         <span>Partidas</span>
         <span>Herramientas</span>
       </nav>
@@ -69,39 +78,28 @@ app.innerHTML = `
           </div>
         </section>
 
-        <section class="panel-group compact-card">
-          <h2>Controles</h2>
-          <div class="toolbar" aria-label="Controles principales">
-            <button id="newGameBtn" type="button">Nueva</button>
-            <button id="undoBtn" type="button">Deshacer</button>
-            <button id="flipBtn" type="button">Girar</button>
-            <button id="analyzeBtn" type="button">Analizar</button>
-            <button id="stopBtn" type="button">Detener</button>
-            <button id="shareGameBtn" type="button">Compartir</button>
-          </div>
-          <details class="tool-drawer">
-            <summary>Herramientas</summary>
-            <div class="toolbar" aria-label="Herramientas avanzadas">
-            <button id="analyzeGameBtn" type="button">Analizar partida</button>
-            <button id="exportPgnBtn" type="button">Exportar PGN</button>
-            <button id="saveGameBtn" type="button">Guardar partida</button>
-            <button id="saveRepertoireBtn" type="button">Guardar repertorio</button>
-            </div>
-          </details>
-        </section>
-
-        <section class="panel-group compact-card voice-card">
+        <section class="panel-group compact-card voice-card play-workspace">
           <h2>Voz</h2>
           <button id="voiceMoveBtn" class="voice-button" type="button">Escuchar jugada</button>
           <p id="voiceStatus" class="voice-status">Di jugadas como “caballo f3”, “peón e4” o “enroque corto”.</p>
         </section>
 
-        <details class="panel-group compact-card tool-drawer">
+        <details class="panel-group compact-card tool-drawer analysis-workspace">
           <summary>Biblioteca</summary>
+          <div class="library-filters">
+            <input id="gameSearchInput" type="search" placeholder="Buscar partida, apertura, jugador..." />
+            <select id="gameResultFilter">
+              <option value="all">Todos los resultados</option>
+              <option value="1-0">1-0</option>
+              <option value="0-1">0-1</option>
+              <option value="1/2-1/2">Tablas</option>
+              <option value="*">En curso</option>
+            </select>
+          </div>
           <div id="savedGamesList" class="library-list"></div>
         </details>
 
-        <details class="panel-group compact-card tool-drawer">
+        <details class="panel-group compact-card tool-drawer analysis-workspace">
           <summary>Repertorio</summary>
           <div id="repertoireList" class="library-list"></div>
         </details>
@@ -113,11 +111,8 @@ app.innerHTML = `
         <div id="board" class="board" aria-label="Tablero"></div>
         <div id="bottomClockSlot" class="board-clock-slot"></div>
         <div class="board-controls" aria-label="Controles del tablero">
-          <div class="clock-actions">
-            <button id="startClockBtn" type="button">Iniciar reloj</button>
-            <button id="pauseClockBtn" type="button">Pausar</button>
-            <button id="resetClockBtn" type="button">Reset</button>
-          </div>
+          <button id="newGameBtn" class="board-primary-action" type="button">Nueva partida</button>
+          <button id="flipBtn" class="icon-button" type="button" aria-label="Girar tablero" title="Girar tablero">⇅</button>
           <button id="gameSettingsBtn" class="icon-button" type="button" aria-label="Configurar juego">⚙</button>
         </div>
         <div id="clockPool" hidden>
@@ -129,6 +124,7 @@ app.innerHTML = `
             </div>
             <strong id="blackClock" class="clock-time">05:00</strong>
             <div class="clock-progress" aria-hidden="true"><span id="blackClockProgress"></span></div>
+            <div id="blackCaptured" class="captured-material"></div>
           </div>
           <div id="whiteClockCard" class="player-clock white-clock">
             <div class="clock-player-row">
@@ -138,16 +134,51 @@ app.innerHTML = `
             </div>
             <strong id="whiteClock" class="clock-time">05:00</strong>
             <div class="clock-progress" aria-hidden="true"><span id="whiteClockProgress"></span></div>
+            <div id="whiteCaptured" class="captured-material"></div>
           </div>
         </div>
       </section>
 
       <aside class="side-panel" aria-label="Panel de juego y análisis">
-        <section class="panel-group analysis-card">
+        <section class="panel-group play-summary-card play-workspace">
+          <div class="panel-heading">
+            <h2>Partida</h2>
+            <div class="analysis-actions">
+              <span id="playModeBadge">Contra motor</span>
+              <button id="playEngineSettingsBtn" class="small-button" type="button">Elegir motor</button>
+            </div>
+          </div>
+          <div class="play-summary-grid">
+            <div>
+              <span>Rival</span>
+              <strong id="playEngineName">Stockfish</strong>
+            </div>
+            <div>
+              <span>Estado</span>
+              <strong id="playEngineStatus">En espera</strong>
+            </div>
+            <div>
+              <span>Color</span>
+              <strong id="playColorLabel">Blancas</strong>
+            </div>
+            <div>
+              <span>Resultado</span>
+              <strong id="playResultLabel">En curso</strong>
+            </div>
+          </div>
+          <div class="play-actions">
+            <button id="shareGameBtn" type="button">Compartir</button>
+            <button id="quickResignBtn" type="button">Rendirse</button>
+            <button id="quickRematchBtn" type="button">Revancha</button>
+          </div>
+        </section>
+
+        <section class="panel-group analysis-card analysis-workspace">
           <div class="panel-heading">
             <h2>Análisis del motor</h2>
             <div class="analysis-actions">
               <span id="engineProfileBadge">SF 18 Full · NNUE</span>
+              <button id="analysisEngineSettingsBtn" class="small-button" type="button">Elegir motor</button>
               <button id="engineSettingsBtn" class="icon-button" type="button" aria-label="Configurar motor">⚙</button>
             </div>
           </div>
@@ -172,7 +203,31 @@ app.innerHTML = `
           </div>
         </section>
 
-        <section class="panel-group context-card">
+        <section class="panel-group analysis-progress-card analysis-workspace">
+          <div class="panel-heading">
+            <h2>Análisis de partida</h2>
+            <div class="analysis-run-actions">
+              <button id="runGameAnalysisBtn" class="small-button" type="button">Analizar partida</button>
+              <button id="cancelAnalysisBtn" class="small-button" type="button">Cancelar</button>
+            </div>
+          </div>
+          <div class="analysis-progress">
+            <span id="analysisProgressText">Sin análisis completo</span>
+            <div class="progress-track" aria-hidden="true"><span id="analysisProgressBar"></span></div>
+          </div>
+        </section>
+
+        <section class="panel-group eval-card analysis-workspace">
+          <h2>Gráfico de evaluación</h2>
+          <div id="evalGraph" class="eval-graph"></div>
+        </section>
+
+        <section class="panel-group report-card analysis-workspace">
+          <h2>Reporte</h2>
+          <div id="analysisReport" class="analysis-report"></div>
+        </section>
+
+        <section class="panel-group context-card analysis-workspace">
           <div>
             <h2>Apertura</h2>
             <div id="openingInfo" class="opening-info">Apertura no identificada</div>
@@ -181,6 +236,20 @@ app.innerHTML = `
             <h2>Finales</h2>
             <div id="endgameInfo" class="opening-info">No es final técnico todavía</div>
           </div>
+        </section>
+
+        <section class="panel-group opening-explorer-card analysis-workspace">
+          <h2>Explorador de apertura</h2>
+          <div id="openingExplorer" class="opening-explorer"></div>
+        </section>
+
+        <section class="panel-group variation-card analysis-workspace">
+          <div class="panel-heading">
+            <h2>Variantes</h2>
+            <button id="saveVariationBtn" class="small-button" type="button">Guardar línea</button>
+          </div>
+          <div id="variationPreview" class="variation-preview">Selecciona una línea del motor.</div>
+          <div id="variationList" class="variation-list"></div>
         </section>
 
         <section class="panel-group move-card">
@@ -216,12 +285,37 @@ app.innerHTML = `
             <input id="pgnFileInput" type="file" accept=".pgn,.txt,application/x-chess-pgn,text/plain" />
           </label>
           <textarea id="pgnInput" spellcheck="false" rows="5" placeholder="Pega una partida PGN"></textarea>
+          <div id="pgnDropZone" class="drop-zone">Arrastra aquí un archivo PGN</div>
+          <label id="pgnGamePickerLabel" class="pgn-game-picker" hidden>
+            Partida detectada
+            <select id="pgnGameSelect"></select>
+          </label>
           <div class="pgn-controls">
             <button id="loadPgnBtn" type="button">Cargar PGN</button>
             <button id="pgnStartBtn" type="button">Inicio</button>
             <button id="pgnPrevBtn" type="button">Atrás</button>
             <button id="pgnNextBtn" type="button">Siguiente</button>
             <button id="pgnEndBtn" type="button">Final</button>
+          </div>
+        </details>
+
+        <details class="panel-group io-card tool-drawer analysis-workspace">
+          <summary>Guardar y exportar</summary>
+          <div class="toolbar" aria-label="Guardar y exportar">
+            <button id="exportPgnBtn" type="button">Exportar PGN</button>
+            <button id="saveGameBtn" type="button">Guardar partida</button>
+            <button id="saveRepertoireBtn" type="button">Guardar repertorio</button>
+          </div>
+        </details>
+
+        <details class="panel-group io-card tool-drawer analysis-workspace">
+          <summary>Backup</summary>
+          <div class="toolbar" aria-label="Backup local">
+            <button id="exportBackupBtn" type="button">Exportar backup</button>
+            <label class="button-like">
+              Importar backup
+              <input id="importBackupInput" type="file" accept="application/json,.json" />
+            </label>
           </div>
         </details>
       </aside>
@@ -349,6 +443,23 @@ app.innerHTML = `
         </footer>
       </section>
     </div>
+
+    <div id="promotionModal" class="modal-backdrop" hidden>
+      <section class="settings-modal promotion-modal" role="dialog" aria-modal="true" aria-labelledby="promotionTitle">
+        <header class="modal-header">
+          <div>
+            <h2 id="promotionTitle">Promoción</h2>
+            <p>Elige la pieza para coronar.</p>
+          </div>
+        </header>
+        <div class="promotion-grid" aria-label="Opciones de promoción">
+          <button data-promotion="q" type="button">♛<span>Dama</span></button>
+          <button data-promotion="r" type="button">♜<span>Torre</span></button>
+          <button data-promotion="b" type="button">♝<span>Alfil</span></button>
+          <button data-promotion="n" type="button">♞<span>Caballo</span></button>
+        </div>
+      </section>
+    </div>
   </div>
 `;
 
@@ -357,31 +468,39 @@ const game = new GameState();
 const engine = new StockfishEngine();
 
 const elements = {
+  shell: document.querySelector(".shell"),
   board: document.querySelector("#board"),
   topClockSlot: document.querySelector("#topClockSlot"),
   bottomClockSlot: document.querySelector("#bottomClockSlot"),
   status: document.querySelector("#statusText"),
   engineState: document.querySelector("#engineState"),
+  playEngineName: document.querySelector("#playEngineName"),
+  playEngineStatus: document.querySelector("#playEngineStatus"),
+  playColorLabel: document.querySelector("#playColorLabel"),
+  playResultLabel: document.querySelector("#playResultLabel"),
+  playEngineSettings: document.querySelector("#playEngineSettingsBtn"),
+  analysisEngineSettings: document.querySelector("#analysisEngineSettingsBtn"),
+  quickResign: document.querySelector("#quickResignBtn"),
+  quickRematch: document.querySelector("#quickRematchBtn"),
   modeTabs: [...document.querySelectorAll("[data-mode]")],
   newGame: document.querySelector("#newGameBtn"),
-  undo: document.querySelector("#undoBtn"),
   flip: document.querySelector("#flipBtn"),
-  analyze: document.querySelector("#analyzeBtn"),
-  stop: document.querySelector("#stopBtn"),
   shareGame: document.querySelector("#shareGameBtn"),
-  analyzeGame: document.querySelector("#analyzeGameBtn"),
+  runGameAnalysis: document.querySelector("#runGameAnalysisBtn"),
+  cancelAnalysis: document.querySelector("#cancelAnalysisBtn"),
   exportPgn: document.querySelector("#exportPgnBtn"),
   saveGame: document.querySelector("#saveGameBtn"),
   saveRepertoire: document.querySelector("#saveRepertoireBtn"),
-  startClock: document.querySelector("#startClockBtn"),
-  pauseClock: document.querySelector("#pauseClockBtn"),
-  resetClock: document.querySelector("#resetClockBtn"),
+  exportBackup: document.querySelector("#exportBackupBtn"),
+  importBackupInput: document.querySelector("#importBackupInput"),
   whiteClock: document.querySelector("#whiteClock"),
   blackClock: document.querySelector("#blackClock"),
   whiteClockCard: document.querySelector("#whiteClockCard"),
   blackClockCard: document.querySelector("#blackClockCard"),
   whiteClockProgress: document.querySelector("#whiteClockProgress"),
   blackClockProgress: document.querySelector("#blackClockProgress"),
+  whiteCaptured: document.querySelector("#whiteCaptured"),
+  blackCaptured: document.querySelector("#blackCaptured"),
   whiteClockName: document.querySelector("#whiteClockName"),
   blackClockName: document.querySelector("#blackClockName"),
   whiteClockMeta: document.querySelector("#whiteClockMeta"),
@@ -415,9 +534,19 @@ const elements = {
   boardTheme: document.querySelector("#boardTheme"),
   showCoordinates: document.querySelector("#showCoordinates"),
   analysisPanel: document.querySelector("#analysisPanel"),
+  analysisProgressText: document.querySelector("#analysisProgressText"),
+  analysisProgressBar: document.querySelector("#analysisProgressBar"),
+  evalGraph: document.querySelector("#evalGraph"),
+  analysisReport: document.querySelector("#analysisReport"),
+  openingExplorer: document.querySelector("#openingExplorer"),
+  variationPreview: document.querySelector("#variationPreview"),
+  variationList: document.querySelector("#variationList"),
+  saveVariation: document.querySelector("#saveVariationBtn"),
   moveList: document.querySelector("#moveList"),
   openingInfo: document.querySelector("#openingInfo"),
   endgameInfo: document.querySelector("#endgameInfo"),
+  gameSearchInput: document.querySelector("#gameSearchInput"),
+  gameResultFilter: document.querySelector("#gameResultFilter"),
   savedGamesList: document.querySelector("#savedGamesList"),
   repertoireList: document.querySelector("#repertoireList"),
   nagSelect: document.querySelector("#nagSelect"),
@@ -426,6 +555,9 @@ const elements = {
   fenInput: document.querySelector("#fenInput"),
   pgnInput: document.querySelector("#pgnInput"),
   pgnFileInput: document.querySelector("#pgnFileInput"),
+  pgnDropZone: document.querySelector("#pgnDropZone"),
+  pgnGamePickerLabel: document.querySelector("#pgnGamePickerLabel"),
+  pgnGameSelect: document.querySelector("#pgnGameSelect"),
   loadFen: document.querySelector("#loadFenBtn"),
   loadPgn: document.querySelector("#loadPgnBtn"),
   pgnStart: document.querySelector("#pgnStartBtn"),
@@ -435,6 +567,8 @@ const elements = {
   checkmateModal: document.querySelector("#checkmateModal"),
   checkmateMessage: document.querySelector("#checkmateMessage"),
   playAgain: document.querySelector("#playAgainBtn"),
+  promotionModal: document.querySelector("#promotionModal"),
+  promotionButtons: [...document.querySelectorAll("[data-promotion]")],
 };
 
 const state = {
@@ -445,6 +579,9 @@ const state = {
   selected: null,
   legalTargets: [],
   lastMove: null,
+  gameResultMessage: "",
+  pendingPromotion: null,
+  importedPgnGames: [],
   engineThinking: false,
   engineMovePending: false,
   checkmateFenShown: null,
@@ -452,6 +589,16 @@ const state = {
   analysisBestMove: null,
   analysisFen: null,
   analysisStoppedByUser: false,
+  selectedAnalysisLine: 0,
+  selectedVariationText: "",
+  selectedVariationLine: null,
+  variations: Array.isArray(settings.variations) ? settings.variations : [],
+  fullAnalysisProgress: {
+    current: 0,
+    total: 0,
+    status: "idle",
+  },
+  cancelFullAnalysis: false,
   speechRecognition: null,
   speechListening: false,
   speechEnabled: false,
@@ -497,6 +644,7 @@ function boot() {
   elements.showCoordinates.value = String(settings.showCoordinates);
   elements.pgnInput.value = settings.pgn || "";
   document.body.dataset.boardTheme = settings.boardTheme;
+  document.body.dataset.appMode = state.mode;
   if (!settings.fen && !settings.pgn) state.orientation = state.playerColor;
   renderEngineProfile();
 
@@ -512,10 +660,7 @@ function boot() {
   bindEngine();
   render();
 
-  engine.init(state.engineProfile).catch((error) => {
-    setEngineState("Error del motor");
-    showStatus(error.message);
-  });
+  initEngineWithFallback(state.engineProfile);
 
   if (state.playerColor === "black" && state.mode === "play") {
     window.setTimeout(requestEngineMove, 300);
@@ -524,27 +669,7 @@ function boot() {
 
 function bindUi() {
   elements.modeTabs.forEach((button) => {
-    button.addEventListener("click", () => {
-      state.mode = button.dataset.mode;
-      state.selected = null;
-      state.legalTargets = [];
-      engine.stop();
-      if (state.mode === "play") {
-        state.engineThinking = false;
-        state.engineMovePending = false;
-        state.analysisStoppedByUser = true;
-        state.analysisLines = [];
-        state.analysisBestMove = null;
-        state.analysisFen = null;
-        setEngineState(engine.ready ? "Motor listo" : "Motor cargando");
-      }
-      persist();
-      render();
-      if (state.mode === "analysis") restartLiveAnalysis();
-      if (state.mode === "play" && !game.isGameOver() && sideToMoveName() !== state.playerColor) {
-        requestEngineMove();
-      }
-    });
+    button.addEventListener("click", () => switchMode(button.dataset.mode));
   });
 
   elements.newGame.addEventListener("click", () => {
@@ -554,31 +679,22 @@ function bindUi() {
     state.engineMovePending = false;
     state.analysisStoppedByUser = state.mode === "play";
     state.lastMove = null;
+    state.gameResultMessage = "";
+    state.pendingPromotion = null;
     state.selected = null;
     state.legalTargets = [];
     state.analysisLines = [];
     state.analysisBestMove = null;
     state.analysisFen = null;
+    state.selectedVariationText = "";
+    state.selectedVariationLine = null;
+    state.variations = [];
     state.checkmateFenShown = null;
+    resetFullAnalysisProgress();
     resetClock();
     persist();
     render();
     if (state.mode === "play" && state.playerColor === "black") requestEngineMove();
-  });
-
-  elements.undo.addEventListener("click", () => {
-    engine.stop();
-    state.engineThinking = false;
-    state.engineMovePending = false;
-    if (game.undoPair()) {
-      state.lastMove = null;
-      state.analysisLines = [];
-      state.analysisBestMove = null;
-      state.analysisFen = null;
-      persist();
-      render();
-      if (state.mode === "analysis") restartLiveAnalysis();
-    }
   });
 
   elements.flip.addEventListener("click", () => {
@@ -587,15 +703,21 @@ function bindUi() {
     render();
   });
 
-  elements.analyze.addEventListener("click", requestAnalysis);
   elements.shareGame.addEventListener("click", shareGame);
-  elements.analyzeGame.addEventListener("click", analyzeFullGame);
+  elements.runGameAnalysis.addEventListener("click", analyzeFullGame);
+  elements.cancelAnalysis.addEventListener("click", cancelFullAnalysis);
   elements.exportPgn.addEventListener("click", exportPgn);
   elements.saveGame.addEventListener("click", saveCurrentGame);
   elements.saveRepertoire.addEventListener("click", saveCurrentRepertoire);
-  elements.startClock.addEventListener("click", startClock);
-  elements.pauseClock.addEventListener("click", pauseClock);
-  elements.resetClock.addEventListener("click", resetClock);
+  elements.saveVariation.addEventListener("click", saveSelectedVariation);
+  elements.quickResign.addEventListener("click", resignGame);
+  elements.quickRematch.addEventListener("click", startRematch);
+  elements.exportBackup.addEventListener("click", exportBackup);
+  elements.importBackupInput.addEventListener("change", importBackupFile);
+  elements.gameSearchInput.addEventListener("input", renderLibrary);
+  elements.gameResultFilter.addEventListener("change", renderLibrary);
+  elements.playEngineSettings.addEventListener("click", openEngineSettings);
+  elements.analysisEngineSettings.addEventListener("click", openEngineSettings);
   elements.engineSettings.addEventListener("click", openEngineSettings);
   elements.closeEngineSettings.addEventListener("click", closeEngineSettings);
   elements.saveEngineSettings.addEventListener("click", saveEngineSettings);
@@ -609,15 +731,6 @@ function bindUi() {
   elements.gameSettingsModal.addEventListener("click", (event) => {
     if (event.target === elements.gameSettingsModal) closeGameSettings();
   });
-  elements.stop.addEventListener("click", () => {
-    engine.stop();
-    state.engineThinking = false;
-    state.engineMovePending = false;
-    state.analysisStoppedByUser = true;
-    setEngineState("Motor detenido");
-    renderAnalysisPanel();
-  });
-
   elements.saveAnnotation.addEventListener("click", saveActiveAnnotation);
 
   [
@@ -653,13 +766,14 @@ function bindUi() {
     try {
       engine.stop();
       game.loadFen(elements.fenInput.value.trim());
-      state.mode = "analysis";
+      setMode("analysis");
       state.lastMove = null;
       state.selected = null;
       state.legalTargets = [];
       state.analysisLines = [];
       state.analysisBestMove = null;
       state.analysisFen = null;
+      state.gameResultMessage = "";
       persist();
       render();
       restartLiveAnalysis();
@@ -669,7 +783,7 @@ function bindUi() {
   });
 
   elements.loadPgn.addEventListener("click", () => {
-    loadPgnText(elements.pgnInput.value.trim());
+    loadSelectedPgnText();
   });
 
   elements.pgnFileInput.addEventListener("change", async () => {
@@ -677,14 +791,24 @@ function bindUi() {
     if (!file) return;
     try {
       const text = await file.text();
-      elements.pgnInput.value = text;
-      loadPgnText(text);
+      preparePgnImport(text);
     } catch {
       showStatus("No se pudo leer el archivo PGN.");
     } finally {
       elements.pgnFileInput.value = "";
     }
   });
+  elements.pgnInput.addEventListener("input", () => {
+    preparePgnImport(elements.pgnInput.value, { loadFirst: false });
+  });
+  elements.pgnDropZone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    elements.pgnDropZone.classList.add("drag-over");
+  });
+  elements.pgnDropZone.addEventListener("dragleave", () => {
+    elements.pgnDropZone.classList.remove("drag-over");
+  });
+  elements.pgnDropZone.addEventListener("drop", handlePgnDrop);
 
   elements.pgnStart.addEventListener("click", () => navigatePgn("start"));
   elements.pgnPrev.addEventListener("click", () => navigatePgn("prev"));
@@ -693,6 +817,15 @@ function bindUi() {
   elements.playAgain.addEventListener("click", () => {
     closeCheckmateModal();
     elements.newGame.click();
+  });
+  elements.promotionButtons.forEach((button) => {
+    button.addEventListener("click", () => completePromotion(button.dataset.promotion));
+  });
+  elements.promotionModal.addEventListener("click", (event) => {
+    if (event.target === elements.promotionModal) closePromotionModal();
+  });
+  elements.analysisReport.addEventListener("select-ply", (event) => {
+    navigateToPly(event.detail.ply);
   });
   setupVoiceInput();
 
@@ -734,6 +867,7 @@ function bindEngine() {
 
   engine.addEventListener("info", (event) => {
     if (event.detail.mode !== "analysis") return;
+    if (state.mode !== "analysis") return;
     if (event.detail.fen !== game.fen()) return;
     state.analysisLines = event.detail.lines;
     state.analysisFen = game.fen();
@@ -746,7 +880,7 @@ function bindEngine() {
     if (mode === "analysis" && event.detail.fen !== game.fen()) return;
     state.engineThinking = false;
     if (mode === "bestmove") state.engineMovePending = false;
-    if (info && mode === "analysis") state.analysisLines = event.detail.lines || [info];
+    if (info && mode === "analysis" && state.mode === "analysis") state.analysisLines = event.detail.lines || [info];
     state.analysisBestMove = move;
 
     if (mode === "bestmove" && state.mode === "play" && move) {
@@ -821,12 +955,16 @@ function handleSquareSelect(square) {
 
 }
 
-function handleMoveAttempt(from, to, promotion = "q") {
+function handleMoveAttempt(from, to, promotion = null) {
   if (state.mode === "play" && state.engineThinking) return null;
   if (game.isGameOver()) return null;
   if (state.mode === "play" && sideToMoveName() !== state.playerColor) return null;
+  if (!promotion && isPromotionCandidate(from, to)) {
+    openPromotionModal(from, to);
+    return null;
+  }
 
-  const move = game.move(from, to, promotion);
+  const move = game.move(from, to, promotion || "q");
   if (!move) return null;
 
   applyClockIncrement(move.color);
@@ -841,7 +979,7 @@ function handleMoveAttempt(from, to, promotion = "q") {
   render();
   playMoveSound(move);
 
-  if (state.mode === "play" && !game.isGameOver()) {
+  if (state.mode === "play" && !game.isGameOver() && !state.gameResultMessage) {
     requestEngineMove();
   } else if (state.mode === "analysis") {
     restartLiveAnalysis();
@@ -873,7 +1011,30 @@ function requestEngineMove() {
 }
 
 function shouldEngineMove() {
-  return state.mode === "play" && !game.isGameOver() && sideToMoveName() !== state.playerColor;
+  return state.mode === "play" && !game.isGameOver() && !state.gameResultMessage && sideToMoveName() !== state.playerColor;
+}
+
+function isPromotionCandidate(from, to) {
+  return game.legalMoves().some((move) => move.from === from && move.to === to && move.promotion);
+}
+
+function openPromotionModal(from, to) {
+  state.pendingPromotion = { from, to };
+  elements.promotionModal.hidden = false;
+  elements.promotionButtons[0]?.focus();
+}
+
+function closePromotionModal() {
+  elements.promotionModal.hidden = true;
+  state.pendingPromotion = null;
+}
+
+function completePromotion(promotion) {
+  const pending = state.pendingPromotion;
+  if (!pending) return;
+  elements.promotionModal.hidden = true;
+  state.pendingPromotion = null;
+  handleMoveAttempt(pending.from, pending.to, promotion);
 }
 
 function requestAnalysis() {
@@ -882,15 +1043,14 @@ function requestAnalysis() {
     return;
   }
 
-  state.mode = "analysis";
-  restartLiveAnalysis();
+  switchMode("analysis");
 }
 
 function loadPgnText(pgn) {
   try {
     engine.stop();
     game.loadPgn(pgn);
-    state.mode = "analysis";
+    setMode("analysis");
     state.lastMove = null;
     state.selected = null;
     state.legalTargets = [];
@@ -898,6 +1058,11 @@ function loadPgnText(pgn) {
     state.analysisBestMove = null;
     state.analysisFen = null;
     state.checkmateFenShown = null;
+    state.gameResultMessage = "";
+    state.selectedVariationText = "";
+    state.selectedVariationLine = null;
+    state.variations = [];
+    resetFullAnalysisProgress();
     persist();
     render();
     restartLiveAnalysis();
@@ -906,9 +1071,51 @@ function loadPgnText(pgn) {
   }
 }
 
+function preparePgnImport(text, { loadFirst = true } = {}) {
+  const trimmed = text.trim();
+  elements.pgnInput.value = text;
+  state.importedPgnGames = splitPgnGames(trimmed);
+  renderPgnGamePicker();
+
+  if (loadFirst && state.importedPgnGames.length) {
+    loadPgnText(state.importedPgnGames[0].pgn);
+  }
+}
+
+function loadSelectedPgnText() {
+  const selected = state.importedPgnGames[Number(elements.pgnGameSelect.value)];
+  loadPgnText((selected?.pgn || elements.pgnInput.value).trim());
+}
+
+function renderPgnGamePicker() {
+  const games = state.importedPgnGames;
+  elements.pgnGamePickerLabel.hidden = games.length <= 1;
+  elements.pgnGameSelect.innerHTML = "";
+
+  games.forEach((gameInfo, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = `${index + 1}. ${gameInfo.label}`;
+    elements.pgnGameSelect.append(option);
+  });
+}
+
+async function handlePgnDrop(event) {
+  event.preventDefault();
+  elements.pgnDropZone.classList.remove("drag-over");
+  const file = event.dataTransfer.files?.[0];
+  if (!file) return;
+
+  try {
+    preparePgnImport(await file.text());
+  } catch {
+    showStatus("No se pudo leer el archivo PGN.");
+  }
+}
+
 function restartLiveAnalysis() {
   if (!engine.ready) {
-    state.mode = "analysis";
+    setMode("analysis");
     setEngineState("Motor cargando");
     persist();
     render();
@@ -952,7 +1159,7 @@ function navigatePgn(direction) {
 function navigateToPly(ply) {
   engine.stop();
   game.goToPly(ply);
-  state.mode = "analysis";
+  setMode("analysis");
   state.engineThinking = false;
   state.engineMovePending = false;
   state.analysisLines = [];
@@ -965,11 +1172,12 @@ function navigateToPly(ply) {
 }
 
 function render() {
+  document.body.dataset.appMode = state.mode;
   elements.modeTabs.forEach((button) => {
     button.classList.toggle("active", button.dataset.mode === state.mode);
   });
   elements.fenInput.value = game.fen();
-  elements.status.textContent = game.status();
+  elements.status.textContent = state.gameResultMessage || game.status();
   renderOpening();
   renderEndgame();
   renderActiveAnnotation();
@@ -982,6 +1190,11 @@ function render() {
     onSelectPly: navigateToPly,
   });
   renderAnalysisPanel();
+  renderPlaySummary();
+  renderAnalysisProgress();
+  renderEvaluation();
+  renderOpeningExplorer();
+  renderVariations();
   renderCheckmateModal();
   persist();
 }
@@ -1005,7 +1218,165 @@ function renderAnalysisPanel() {
     turn: game.turn(),
     thinking: state.engineThinking,
     fen: state.analysisFen || game.fen(),
+    selectedLine: state.selectedAnalysisLine,
+    onSelectLine: selectAnalysisLine,
   });
+  elements.variationPreview.textContent = state.selectedVariationText || "Selecciona una línea del motor.";
+  elements.saveVariation.disabled = !state.selectedVariationLine?.pv?.length;
+}
+
+function renderPlaySummary() {
+  const profile = resolveEngineProfile(state.engineProfile);
+  const result = state.gameResultMessage
+    || (game.isGameOver() ? game.status() : "En curso");
+  elements.playEngineName.textContent = profile.shortName;
+  elements.playEngineStatus.textContent = state.engineThinking
+    ? "Pensando"
+    : engine.ready ? "Listo" : "Cargando";
+  elements.playColorLabel.textContent = state.playerColor === "white" ? "Blancas" : "Negras";
+  elements.playResultLabel.textContent = result;
+  elements.quickResign.disabled = state.mode !== "play" || game.isGameOver() || Boolean(state.gameResultMessage);
+}
+
+function selectAnalysisLine(line, index) {
+  state.selectedAnalysisLine = index;
+  state.selectedVariationLine = line;
+  state.selectedVariationText = pvToSan(state.analysisFen || game.fen(), line.pv);
+  renderAnalysisPanel();
+}
+
+function saveSelectedVariation() {
+  if (!state.selectedVariationLine?.pv?.length) return;
+  const basePly = game.activePly();
+  const baseFen = state.analysisFen || game.fen();
+  const variation = createVariation({
+    basePly,
+    baseFen,
+    line: state.selectedVariationLine,
+    index: state.selectedAnalysisLine,
+  });
+  state.variations.unshift(variation);
+  appendVariationComment(basePly, variation.san);
+  persist();
+  render();
+}
+
+function appendVariationComment(basePly, san) {
+  const ply = Number(basePly);
+  if (!ply || !san) return;
+  const annotation = game.getAnnotation(ply);
+  const nextComment = [annotation.comment, `Variante: ${san}`].filter(Boolean).join(" ");
+  game.setAnnotation(ply, { comment: nextComment });
+}
+
+function renderVariations() {
+  elements.variationList.innerHTML = "";
+  const relevant = state.variations.filter((variation) => variation.basePly === game.activePly());
+
+  if (!relevant.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "Sin variantes guardadas en esta posición.";
+    elements.variationList.append(empty);
+    return;
+  }
+
+  for (const variation of relevant) {
+    const item = document.createElement("div");
+    item.className = "variation-item";
+
+    const text = document.createElement("span");
+    text.textContent = variation.san || "Variante sin notación";
+
+    const actions = document.createElement("div");
+    actions.className = "variation-actions";
+
+    const use = document.createElement("button");
+    use.type = "button";
+    use.textContent = "Usar";
+    use.addEventListener("click", () => applyVariation(variation.id));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Eliminar";
+    remove.addEventListener("click", () => deleteVariation(variation.id));
+
+    actions.append(use, remove);
+    item.append(text, actions);
+    elements.variationList.append(item);
+  }
+}
+
+function applyVariation(id) {
+  const variation = state.variations.find((item) => item.id === id);
+  if (!variation) return;
+
+  engine.stop();
+  game.goToPly(variation.basePly);
+  for (const uci of variation.pv) {
+    const move = game.move(uciToMove(uci).from, uciToMove(uci).to, uciToMove(uci).promotion);
+    if (!move) break;
+  }
+  state.lastMove = game.history().at(-1) || null;
+  state.analysisLines = [];
+  state.analysisBestMove = null;
+  state.analysisFen = null;
+  state.selectedVariationText = "";
+  state.selectedVariationLine = null;
+  persist();
+  render();
+  restartLiveAnalysis();
+}
+
+function deleteVariation(id) {
+  state.variations = state.variations.filter((variation) => variation.id !== id);
+  persist();
+  render();
+}
+
+function renderAnalysisProgress() {
+  const { current, total, status } = state.fullAnalysisProgress;
+  const percent = total ? Math.min(100, Math.round((current / total) * 100)) : 0;
+  const labels = {
+    idle: "Sin análisis completo",
+    running: `Analizando ${current}/${total}`,
+    cancelled: `Análisis cancelado en ${current}/${total}`,
+    complete: `Análisis completo: ${total}/${total}`,
+  };
+  elements.analysisProgressText.textContent = labels[status] || labels.idle;
+  elements.analysisProgressBar.style.width = `${percent}%`;
+  elements.cancelAnalysis.disabled = status !== "running";
+  elements.runGameAnalysis.disabled = status === "running" || !game.lineHistory().length;
+}
+
+function renderEvaluation() {
+  const annotations = game.annotationsObject();
+  renderEvaluationGraph(elements.evalGraph, game.lineHistory(), annotations, game.activePly(), navigateToPly);
+  renderAnalysisReport(elements.analysisReport, game.lineHistory(), annotations);
+}
+
+function renderOpeningExplorer() {
+  const recommendations = recommendOpeningMoves(game.lineHistory());
+  elements.openingExplorer.innerHTML = "";
+
+  if (!recommendations.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "Sin sugerencias en el libro actual para esta posición.";
+    elements.openingExplorer.append(empty);
+    return;
+  }
+
+  for (const recommendation of recommendations) {
+    const row = document.createElement("div");
+    row.className = "opening-option";
+    const move = document.createElement("strong");
+    move.textContent = recommendation.move;
+    const detail = document.createElement("span");
+    detail.textContent = `${recommendation.eco} · ${recommendation.name}`;
+    row.append(move, detail);
+    elements.openingExplorer.append(row);
+  }
 }
 
 function renderCheckmateModal() {
@@ -1042,6 +1413,7 @@ function persist() {
     showCoordinates: elements.showCoordinates.value === "true",
     fen: game.fen(),
     pgn: elements.pgnInput.value,
+    variations: state.variations,
   });
 }
 
@@ -1051,6 +1423,40 @@ function setEngineState(text) {
 
 function showStatus(text) {
   elements.status.textContent = text;
+}
+
+function setMode(mode) {
+  state.mode = mode === "analysis" ? "analysis" : "play";
+  document.body.dataset.appMode = state.mode;
+}
+
+function switchMode(mode) {
+  const nextMode = mode === "analysis" ? "analysis" : "play";
+  state.selected = null;
+  state.legalTargets = [];
+
+  if (nextMode === "play") {
+    engine.stop();
+    state.engineThinking = false;
+    state.engineMovePending = false;
+    state.analysisStoppedByUser = true;
+    state.analysisLines = [];
+    state.analysisBestMove = null;
+    state.analysisFen = null;
+    state.selectedVariationText = "";
+    state.selectedVariationLine = null;
+    setMode("play");
+    setEngineState(engine.ready ? "Motor listo" : "Motor cargando");
+    persist();
+    render();
+    if (shouldEngineMove()) requestEngineMove();
+    return;
+  }
+
+  setMode("analysis");
+  persist();
+  render();
+  restartLiveAnalysis();
 }
 
 function sideToMoveName() {
@@ -1094,7 +1500,7 @@ function saveGameSettings() {
   persist();
   render();
   closeGameSettings();
-  if (state.mode === "play" && state.playerColor === sideToMoveName()) requestEngineMove();
+  if (state.mode === "play" && state.playerColor !== sideToMoveName()) requestEngineMove();
 }
 
 async function saveEngineSettings() {
@@ -1125,8 +1531,35 @@ async function switchEngineProfile(profileId) {
     configureEngine();
     setEngineState("Motor listo");
   } catch (error) {
+    await initEngineWithFallback("stockfish18-lite", error);
+  }
+}
+
+async function initEngineWithFallback(profileId, previousError = null) {
+  state.engineProfile = profileId;
+  renderEngineProfile();
+  setEngineState("Cargando motor");
+
+  try {
+    await engine.useProfile(profileId);
+    configureEngine();
+    setEngineState("Motor listo");
+    persist();
+    if (previousError) showStatus(`Se usó motor alternativo por compatibilidad: ${resolveEngineProfile(profileId).name}.`);
+    if (shouldEngineMove()) requestEngineMove();
+  } catch (error) {
+    const nextProfile = profileId === "stockfish18-full"
+      ? "stockfish18-lite"
+      : profileId === "stockfish18-asm"
+        ? null
+        : "stockfish18-asm";
+    if (nextProfile) {
+      showStatus("El motor seleccionado falló. Probando motor compatible.");
+      await initEngineWithFallback(nextProfile, error);
+      return;
+    }
     setEngineState("Error del motor");
-    showStatus(error.message || "No se pudo cargar el motor.");
+    showStatus(previousError?.message || error.message || "No se pudo cargar el motor.");
   }
 }
 
@@ -1163,22 +1596,31 @@ async function analyzeFullGame() {
   if (!engine.ready || state.analyzingGame || !game.lineHistory().length) return;
 
   state.analyzingGame = true;
-  state.mode = "analysis";
+  state.cancelFullAnalysis = false;
+  state.fullAnalysisProgress = {
+    current: 0,
+    total: game.lineHistory().length,
+    status: "running",
+  };
+  setMode("analysis");
   setEngineState("Analizando partida");
   engine.stop();
   configureEngine();
+  render();
 
   const originalPly = game.activePly();
   const chess = new Chess();
   const depth = Math.min(Number(elements.analysisDepth.value) || 10, 12);
 
   for (let index = 0; index < game.lineHistory().length; index += 1) {
+    if (state.cancelFullAnalysis) break;
     const move = game.lineHistory()[index];
     const ply = index + 1;
     const fenBefore = chess.fen();
     const turnBefore = chess.turn();
     const before = await engine.evaluate({ fen: fenBefore, depth });
     const bestMove = before.move || "";
+    const bestMoveSan = uciToSan(fenBefore, bestMove);
     const bestCp = scoreToCp(before.info?.score, turnBefore);
 
     chess.move({ from: move.from, to: move.to, promotion: move.promotion || "q" });
@@ -1190,12 +1632,16 @@ async function analyzeFullGame() {
     game.setAnnotation(ply, {
       eval: formatEngineEval(after.info?.score, chess.turn()),
       bestMove,
+      bestMoveSan,
       loss,
       classification,
       nag: classificationNag(classification),
     });
 
+    state.fullAnalysisProgress.current = ply;
     setEngineState(`Analizando ${ply}/${game.lineHistory().length}`);
+    renderAnalysisProgress();
+    renderEvaluation();
     renderMoveList(elements.moveList, game.lineHistory(), {
       activePly: ply,
       annotations: game.annotationsObject(),
@@ -1205,10 +1651,29 @@ async function analyzeFullGame() {
 
   game.goToPly(originalPly);
   state.analyzingGame = false;
-  setEngineState("Análisis completo");
+  state.fullAnalysisProgress.status = state.cancelFullAnalysis ? "cancelled" : "complete";
+  state.cancelFullAnalysis = false;
+  setEngineState(state.fullAnalysisProgress.status === "complete" ? "Análisis completo" : "Análisis cancelado");
   persist();
   render();
-  restartLiveAnalysis();
+  if (state.mode === "analysis") restartLiveAnalysis();
+}
+
+function cancelFullAnalysis() {
+  if (!state.analyzingGame) return;
+  state.cancelFullAnalysis = true;
+  engine.stop();
+  setEngineState("Cancelando análisis");
+  renderAnalysisProgress();
+}
+
+function resetFullAnalysisProgress() {
+  state.fullAnalysisProgress = {
+    current: 0,
+    total: 0,
+    status: "idle",
+  };
+  state.cancelFullAnalysis = false;
 }
 
 function formatEngineEval(score, turn) {
@@ -1217,6 +1682,21 @@ function formatEngineEval(score, turn) {
   if (Math.abs(cp) >= 10000) return cp > 0 ? "#+" : "#-";
   const pawns = cp / 100;
   return `${pawns >= 0 ? "+" : ""}${pawns.toFixed(2)}`;
+}
+
+function uciToSan(fen, uci) {
+  if (!uci || uci === "(none)") return "";
+  try {
+    const chess = new Chess(fen);
+    const move = chess.move({
+      from: uci.slice(0, 2),
+      to: uci.slice(2, 4),
+      promotion: uci.slice(4, 5) || "q",
+    });
+    return move?.san || uci;
+  } catch {
+    return uci;
+  }
 }
 
 function saveActiveAnnotation() {
@@ -1253,26 +1733,71 @@ function renderEndgame() {
 }
 
 function exportPgn() {
-  const blob = new Blob([game.linePgn()], { type: "application/x-chess-pgn;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `partida-${Date.now()}.pgn`;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  downloadText(`partida-${Date.now()}.pgn`, game.linePgn(), "application/x-chess-pgn;charset=utf-8");
+}
+
+function resignGame() {
+  if (state.mode !== "play" || game.isGameOver() || state.gameResultMessage) return;
+  engine.stop();
+  pauseClock();
+  state.engineThinking = false;
+  state.engineMovePending = false;
+  state.gameResultMessage = `${state.playerColor === "white" ? "Blancas" : "Negras"} abandonan.`;
+  showStatus(state.gameResultMessage);
+  render();
+}
+
+function startRematch() {
+  elements.newGame.click();
 }
 
 function saveCurrentGame() {
-  saveGameRecord({
+  const opening = detectOpening(game.lineHistory());
+  saveGameRecord(buildGameRecord({
     id: crypto.randomUUID(),
     pgn: game.linePgn(),
     fen: game.fen(),
     annotations: game.annotationsObject(),
-    opening: detectOpening(game.lineHistory()),
-    createdAt: new Date().toISOString(),
-  });
+    variations: state.variations,
+    opening,
+    result: currentGameResult(game),
+    playerColor: state.playerColor,
+    moveCount: game.lineHistory().length,
+  }));
   showStatus("Partida guardada.");
   renderLibrary();
+}
+
+function exportBackup() {
+  const data = JSON.stringify(exportUserData(), null, 2);
+  downloadText(`playchess-backup-${Date.now()}.json`, data, "application/json;charset=utf-8");
+  showStatus("Backup exportado.");
+}
+
+function downloadText(filename, text, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+async function importBackupFile() {
+  const file = elements.importBackupInput.files?.[0];
+  if (!file) return;
+
+  try {
+    const data = JSON.parse(await file.text());
+    importUserData(data);
+    renderLibrary();
+    showStatus("Backup importado.");
+  } catch (error) {
+    showStatus(error.message || "No se pudo importar el backup.");
+  } finally {
+    elements.importBackupInput.value = "";
+  }
 }
 
 function saveCurrentRepertoire() {
@@ -1289,40 +1814,41 @@ function saveCurrentRepertoire() {
 }
 
 function renderLibrary() {
-  renderLibraryList(elements.savedGamesList, loadSavedGames(), "Sin partidas guardadas");
-  renderLibraryList(elements.repertoireList, loadRepertoireLines(), "Sin líneas guardadas");
+  renderSavedGamesLibrary(elements.savedGamesList, loadSavedGames(), {
+    query: elements.gameSearchInput.value,
+    result: elements.gameResultFilter.value,
+    onOpen: openSavedGame,
+    onExport: exportSavedGame,
+    onDelete: removeSavedGame,
+  });
+  renderRepertoireLibrary(elements.repertoireList, loadRepertoireLines(), openSavedGame);
 }
 
-function renderLibraryList(container, items, emptyText) {
-  container.innerHTML = "";
-  if (!items.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = emptyText;
-    container.append(empty);
-    return;
+function openSavedGame(item) {
+  if (!item.pgn) return;
+  try {
+    engine.stop();
+    game.loadPgn(item.pgn);
+    game.loadAnnotations(item.annotations);
+    state.variations = Array.isArray(item.variations) ? item.variations : [];
+    setMode("analysis");
+    persist();
+    render();
+    restartLiveAnalysis();
+  } catch {
+    showStatus("No se pudo abrir el registro guardado.");
   }
+}
 
-  for (const item of items.slice(0, 5)) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "library-item";
-    row.textContent = item.opening?.name || item.name || new Date(item.updatedAt).toLocaleDateString();
-    row.addEventListener("click", () => {
-      if (!item.pgn) return;
-      try {
-        game.loadPgn(item.pgn);
-        game.loadAnnotations(item.annotations);
-        state.mode = "analysis";
-        persist();
-        render();
-        restartLiveAnalysis();
-      } catch {
-        showStatus("No se pudo abrir el registro guardado.");
-      }
-    });
-    container.append(row);
-  }
+function exportSavedGame(item) {
+  if (!item.pgn) return;
+  downloadText(`${item.title || "partida"}.pgn`, item.pgn, "application/x-chess-pgn;charset=utf-8");
+}
+
+function removeSavedGame(item) {
+  deleteGameRecord(item.id);
+  showStatus("Partida eliminada.");
+  renderLibrary();
 }
 
 function startClock() {
@@ -1411,6 +1937,7 @@ function renderClock() {
   elements.blackClockCard.classList.toggle("flagged", state.clock.blackMs <= 0);
   elements.whiteClockProgress.style.width = `${clockProgress(state.clock.whiteMs)}%`;
   elements.blackClockProgress.style.width = `${clockProgress(state.clock.blackMs)}%`;
+  renderCapturedMaterial();
 }
 
 function renderClockPlacement() {
@@ -1430,6 +1957,12 @@ function formatClock(ms) {
   const minutes = Math.floor(safe / 60);
   const seconds = safe % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function renderCapturedMaterial() {
+  const material = capturedMaterial(game.lineHistory());
+  elements.whiteCaptured.innerHTML = materialRow(material.whiteCaptured, material.balance);
+  elements.blackCaptured.innerHTML = materialRow(material.blackCaptured, -material.balance);
 }
 
 async function shareGame() {

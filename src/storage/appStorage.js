@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS = {
   pieceTheme: "filled",
   fen: null,
   pgn: "",
+  variations: [],
 };
 
 export function loadSettings() {
@@ -72,6 +73,7 @@ function sanitizeSettings(input = {}) {
     pieceTheme: input.pieceTheme === "filled" ? "filled" : DEFAULT_SETTINGS.pieceTheme,
     fen: typeof input.fen === "string" && input.fen.trim() ? input.fen : null,
     pgn: typeof input.pgn === "string" ? input.pgn : "",
+    variations: Array.isArray(input.variations) ? input.variations.slice(0, 200) : [],
   };
 }
 
@@ -117,6 +119,12 @@ export function loadSavedGames() {
   return loadCollection(GAMES_KEY);
 }
 
+export function deleteGameRecord(id) {
+  const games = loadCollection(GAMES_KEY).filter((game) => game.id !== id);
+  saveCollection(GAMES_KEY, games);
+  return games;
+}
+
 export function saveRepertoireLine(line) {
   const lines = loadCollection(REPERTOIRE_KEY);
   const next = { ...line, updatedAt: new Date().toISOString() };
@@ -129,6 +137,26 @@ export function saveRepertoireLine(line) {
 
 export function loadRepertoireLines() {
   return loadCollection(REPERTOIRE_KEY);
+}
+
+export function exportUserData() {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: loadSettings(),
+    games: loadSavedGames(),
+    repertoire: loadRepertoireLines(),
+  };
+}
+
+export function importUserData(data = {}) {
+  if (!data || typeof data !== "object") {
+    throw new Error("Backup inválido.");
+  }
+
+  if (data.settings) saveSettings(data.settings);
+  if (Array.isArray(data.games)) saveCollection(GAMES_KEY, data.games.slice(0, 100));
+  if (Array.isArray(data.repertoire)) saveCollection(REPERTOIRE_KEY, data.repertoire.slice(0, 200));
 }
 
 function clampNumber(value, min, max, fallback) {
